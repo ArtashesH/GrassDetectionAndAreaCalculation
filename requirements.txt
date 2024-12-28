@@ -1,0 +1,5 @@
+shapely
+pyproj
+simplekml
+geopy
+ultralytics

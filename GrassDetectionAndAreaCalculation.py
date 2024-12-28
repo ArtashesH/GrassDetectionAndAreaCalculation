@@ -1,0 +1,414 @@
+import time
+
+from shapely.geometry import Point
+from pyproj import Transformer
+from shapely.ops import transform
+import simplekml
+from argparse import ArgumentParser
+import argparse
+import os
+from datetime import datetime
+
+import requests
+from geopy.geocoders import Nominatim
+from geopy.distance import geodesic
+from ultralytics import YOLO
+from shapely.geometry import Polygon
+import requests
+import numpy as np
+import math
+import csv
+import cv2
+import sys
+
+
+
+
+
+
+
+
+
+#Calculate Distance between two points with given lat long
+def calculateDistanceBetweenTwoPoints(lat1, lon1, lat2, lon2):
+    """
+    Calculate the great-circle distance in meters between two latitude-longitude points.
+
+    Returns:
+        Distance in meters.
+    """
+    # Radius of Earth in meters
+    R = 6371000
+
+    # Convert latitude and longitude from degrees to radians
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    distance = R * c
+    #This calculation is returning distance in meters
+    return distance
+
+# Function to load YOLO model. Model is for detecting and classification of grass areas. We have two classes - artificial , natural
+def load_yolo_model(model_path):
+    # Load YOLO model from the specified path
+    model = YOLO(model_path)  # Adjust based on the YOLO library in use
+    return model
+
+
+#Write data about locations in csv. This function we are using to add generated lat/long points inside of circle with given radius
+def data_in_csv(user_id, latitude, longitude):
+    display_data = {
+        'user_id': user_id,
+        'latitude': latitude,
+        'longitude': longitude
+
+    }
+    csv_file_name = 'circle_results.csv'
+    csv_file_path = os.path.join(os.getcwd(), csv_file_name)
+
+    with open(csv_file_path, 'a', newline='') as file:
+        writer = csv.writer(file)
+        if os.stat(csv_file_path).st_size == 0:
+            writer.writerow(display_data.keys())
+        writer.writerow(display_data.values())
+
+    print(f"Data added to CSV successfully.")
+
+#Write data about areas, address, distances   in result csv file. This function is used for final output csv file generation
+def data_in_csvArea(address, minDistLat, minDistLong, minDist,  listOfAreas, minumumArea):
+    sumOfAreas = 0
+    finalLatLong = str(minDistLong) + ' ' + str(minDistLat)
+    #Devide address to components , zip , state, city country , etc
+    adressComp = address.split(',')  
+    stateAndZipCode = adressComp[len(adressComp) - 2].split(' ')
+
+    for i in range(len(listOfAreas)):
+        sumOfAreas += listOfAreas[i]
+    if sumOfAreas < float(minumumArea):
+        return
+    if len(adressComp) >= 5:
+        display_data = {
+            'Address': adressComp[len(adressComp) - 4],
+            'City': adressComp[len(adressComp) - 3],
+            'State': stateAndZipCode[1],
+            'Zip code':  stateAndZipCode[2],
+            'Country':   adressComp[len(adressComp) - 1],
+            'Lat/Long': finalLatLong,
+            'Distance from input address (in miles)': minDist,
+            'Artificial grass (in sq ft)': listOfAreas,
+            'WholeArea': sumOfAreas
+
+        }
+        #Write datainto output csv file 
+        csv_file_name = 'addressData.csv'
+        csv_file_path = os.path.join(os.getcwd(), csv_file_name)
+
+        with open(csv_file_path, 'a', newline='') as file:
+            writer = csv.writer(file)
+            if os.stat(csv_file_path).st_size == 0:
+                writer.writerow(display_data.keys())
+            writer.writerow(display_data.values())
+
+        print(f"Data added to CSV successfully.")
+
+#With using google api, get satellite image for given location , with given size, zoom parameters
+def get_satellite_image_with_resolution(lat, lon,api_key, zoom=20, size=(640, 640), scale=1):
+    # Base URL for static map image
+    base_url = "https://maps.googleapis.com/maps/api/staticmap?"
+    params = {
+        'center': f'{lat},{lon}',
+        'zoom': zoom,
+        'size': f'{size[0]}x{size[1]}',
+        'scale': scale,
+        'maptype': 'satellite',
+        'key': api_key
+    }
+
+    # Fetch satellite image
+    response = requests.get(base_url, params=params)
+
+    if response.status_code == 200:
+        img_arr = np.asarray(bytearray(response.content), dtype=np.uint8)
+        image = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+
+        # Calculate meters per pixel
+        earth_circumference = 40075016.686  # in meters
+        tile_size = 256  # Google's tile size in pixels
+        meters_per_pixel = (earth_circumference * math.cos(math.radians(lat))) / (2 ** zoom * tile_size)
+        # metersPerPx = 156543.03392 * math.cos(lat * np.pi/180) / 2 ** zoom
+        # Return the image and the meters per pixel resolution
+        return image, meters_per_pixel
+    else:
+        print("Error fetching satellite image")
+        return None, None
+
+#Order polygon points for area calculation
+def order_polygon_points(coords):
+    # Calculate the centroid
+    cx = sum(x for x, y in coords) / len(coords)
+    cy = sum(y for x, y in coords) / len(coords)
+
+    # Sort points by angle from the centroid
+    sorted_coords = sorted(coords, key=lambda point: math.atan2(point[1] - cy, point[0] - cx))
+
+    # Return the ordered points as a Polygon
+    polygon = Polygon(sorted_coords)
+    return polygon
+
+#Calcualte address from given lat long with geolocation api
+def latlng_to_address(lat, lng, api_key):
+    """Convert latitude and longitude to an address using Google Geocoding API."""
+    geocode_url = "https://maps.googleapis.com/maps/api/geocode/json"
+    params = {"latlng": f"{lat},{lng}", "key": api_key}
+    response = requests.get(geocode_url, params=params).json()
+
+    if response["status"] == "OK":
+        # Return the formatted address from the response
+        return response["results"][0]["formatted_address"]
+    else:
+        return -1
+       # raise  Exception(f"Geocoding API error: {response['status']} - {response.get('error_message')}")
+
+
+
+#Calculate lat long from given point and given meter transform
+def calculate_new_coordinates(initial_lat, initial_lng, distance_x, distance_y):
+    """
+    Calculate new latitude and longitude after moving a specified distance in X and Y.
+
+    Args:
+        initial_lat (float): Initial latitude in decimal degrees.
+        initial_lng (float): Initial longitude in decimal degrees.
+        distance_x (float): Distance to move in the X direction (meters, longitude).
+        distance_y (float): Distance to move in the Y direction (meters, latitude).
+
+    Returns:
+        tuple: New latitude and longitude in decimal degrees.
+    """
+    # Earth's radius in meters
+    earth_radius = 6371000
+
+    # Convert initial latitude to radians
+    initial_lat_rad = math.radians(initial_lat)
+
+    # Calculate the new latitude
+    new_lat = initial_lat + (distance_y / earth_radius) * (180 / math.pi)
+
+    # Calculate the new longitude
+    new_lng = initial_lng + (distance_x / (earth_radius * math.cos(initial_lat_rad))) * (180 / math.pi)
+
+    return new_lat, new_lng
+
+
+# Function to perform building detection and area calculation
+def detect_grass_and_calculate_area(image, model,meters_per_pixel=0.1):
+    # Detect buildings using YOLO model
+    results = model(image, conf=0.1)
+
+    clist = results[0].boxes.cls
+
+    areas = []
+    centerOfPolygons  = []
+    if len(results) == 0 or results[0].boxes is None:
+        return image, areas
+    # Assuming the result has polygons in format [x, y] for each vertex
+
+
+    if results[0].masks is None:
+        return image, areas, centerOfPolygons
+    maske_buildings = results[0].masks.xy  # Polygons for detected buildings
+    print("Current image detect ")
+    indexOfMask = 0
+    for maske_building in maske_buildings:
+        # Format points for use with OpenCV and Shapely
+        polygon_points = maske_building.astype(int).reshape((-1, 1, 2))
+        #Filter from detected regions just artificial grass class
+        if model.names[int(clist[indexOfMask])] != 'artifical':
+            continue
+        if model.names[int(clist[indexOfMask])] == 'artifical':
+            cv2.polylines(image, [polygon_points], isClosed=True, color=(0, 255, 0), thickness=2)
+
+
+        # Reformat polygon for Shapely and calculate area
+        maske_building = [tuple(point) for point in maske_building.astype(int)]
+        if len(maske_building) == 0:
+            continue
+        polygon = order_polygon_points(maske_building)
+        centerOfPolygon = polygon.centroid
+        area = (polygon.area * ((meters_per_pixel ) ** 2) ) * 10.7639 # Convert to square footage
+        areas.append(area)
+        centerOfPolygons.append(centerOfPolygon)
+
+        # Draw on image found region and measured areas
+        cv2.putText(image, f' {area:.2f}', (int(maske_building[0][0]), int(maske_building[0][1]) - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        indexOfMask += 1
+        cv2.circle(image,(int(centerOfPolygon.x), int(centerOfPolygon.y)),5,(255,0,0),-1)
+  #  cv2.imshow("Satellite", image)
+  #  cv2.waitKey(10)
+
+    return image, areas, centerOfPolygons
+
+
+
+#For given address  and radius, generate list of points, which are inside of the circle with given radius and given center point from address.
+def generate_circle_points(center_lat, center_lng, radius, step=10):
+    """
+    Generate latitude and longitude points at regular intervals within a circle.
+
+    Args:
+        center_lat (float): Latitude of the circle center.
+        center_lng (float): Longitude of the circle center.
+        radius (float): Radius of the circle in meters.
+        step (float): Distance between points in meters (default is 10 meters).
+
+    Returns:
+        list: List of latitude and longitude points within the circle.
+    """
+    points = []
+    earth_radius = 6371000  # Earth's radius in meters
+
+    for r in range(0, int(radius) + 1, step):
+        # For each radius step, calculate points in a circular pattern
+        for angle in range(0, 360, int(360 * step / (2 * math.pi * r)) if r > 0 else 1):
+            theta = math.radians(angle)  # Convert angle to radians
+            delta_lat = r * math.cos(theta) / earth_radius
+            delta_lng = r * math.sin(theta) / (earth_radius * math.cos(math.radians(center_lat)))
+
+            point_lat = center_lat + math.degrees(delta_lat)
+            point_lng = center_lng + math.degrees(delta_lng)
+
+            points.append((point_lat, point_lng))
+
+    return points
+
+
+
+#Main function for processing all units.
+def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
+
+
+    # Yolo based model for grass region detection
+    model = YOLO('graddDetModelL.pt', 0.5)
+
+    #Remove previously generated csv files.
+    os.remove('addressData.csv') if os.path.exists('addressData.csv') else None
+    os.remove('circle_results.csv') if os.path.exists('circle_results.csv') else None
+    addressesWithAreas = {}
+    addressesWithLatLong = {}
+    
+    address =  inputAddress #  '10449 E Topaz Cir, Mesa, AZ 85212, USA'  # '10642 E Trillium Ave, Mesa, AZ 85212'
+    geolocator = Nominatim(user_agent="Your_Name")
+    location = geolocator.geocode(address)
+
+    # Define circle parameters
+    center_lat = location.latitude
+    center_lng = location.longitude
+
+    radius =  (float(inputRadius) * 1609.34)
+    radius = int(radius)
+
+
+    step = 50  # Distance between points in meters
+
+    # Generate circle points from given point with given radius 
+    points = generate_circle_points(center_lat, center_lng, radius, step)
+    pointsUnique = [item for index, item in enumerate(points) if item not in points[:index]]
+    # Print the points
+    print(f"Generated {len(pointsUnique)} points within the circle:")
+
+    indexOfPoint = 0
+    #Go through all circle points
+    for point in pointsUnique:
+        #All lat/long points , generated inside of circle, add into the csv file.
+        #data_in_csv(indexOfPoint, point[0], point[1])
+
+        indexOfPoint += 1
+        print("Current processing point ", indexOfPoint , "From point ", len(pointsUnique))
+        #Get satellite image from given lat/lng point and meter per pixel scale
+        currImg , meterInPixel  = get_satellite_image_with_resolution(point[0], point[1],API_KEY, zoom=20, size=(640, 640), scale=1)
+    
+        #Run grass detection and area calculation on each image
+        resImg, areas, polygonCenterPoints = detect_grass_and_calculate_area(currImg, model,meterInPixel)
+
+        tmpAddressMap = {}
+        tmpAddressMapLatLong = {}
+        #tmpAreaList = []
+        for j in range(len(polygonCenterPoints)):
+            tmpArea = areas[j]
+            tmpCenterPoint = polygonCenterPoints[j]
+            tmpDeltaX = 0
+            tmpDeltaY = 0
+            #For each detected area on image get center and with google geoapi get address
+            tmpDeltaX = (tmpCenterPoint.x - 320)* meterInPixel
+            tmpDeltaY = (320 - tmpCenterPoint.y) * meterInPixel
+            newLat, newLog =  calculate_new_coordinates(point[0], point[1], tmpDeltaX, tmpDeltaY)
+            finalAddress =  latlng_to_address(newLat, newLog, API_KEY)
+
+            if finalAddress != -1:
+                addressesWithLatLong[finalAddress] = [newLat, newLog]
+            if  finalAddress != -1 and  finalAddress in tmpAddressMap:
+                print('Found same address ', finalAddress,  tmpArea)
+                tmpAddressMap[finalAddress].append(tmpArea)
+            if finalAddress != -1 and not(finalAddress in tmpAddressMap):
+                tmpAddressMap[finalAddress] = [tmpArea]
+
+        #If current adress is not in map, add it , if exists, add bigger area for current adress
+        if len(addressesWithAreas) == 0:
+            addressesWithAreas = tmpAddressMap
+        else:
+            for tmpEl in tmpAddressMap:
+                if tmpEl in addressesWithAreas and len(tmpAddressMap[tmpEl]) > len(addressesWithAreas[tmpEl]):
+                    addressesWithAreas[tmpEl] = tmpAddressMap[tmpEl]
+                if not(tmpEl in addressesWithAreas):
+                    addressesWithAreas[tmpEl] = tmpAddressMap[tmpEl]
+
+
+    #Sort all found adresses from given input adress by the distance increase
+    while len(addressesWithAreas) > 0:
+        minDist = sys.float_info.max
+        minDistLat = ''
+        minDistLong = ''
+        removeAddress = ''
+        for tmpElWr in addressesWithAreas:
+
+
+            currLat = addressesWithLatLong[tmpElWr][0]
+            currLong = addressesWithLatLong[tmpElWr][1]
+            #tmp_lat =      location.latitude
+            #tmp_lng = location.longitude
+            distBet = calculateDistanceBetweenTwoPoints(currLat, currLong, center_lat, center_lng)
+            if distBet < minDist:
+                minDist = distBet
+                minDistLat = currLat
+                minDistLong = currLong
+                removeAddress = tmpElWr
+        if removeAddress != '':
+
+            listOfAreas = addressesWithAreas[removeAddress]
+            #Add all data into final output csv
+            data_in_csvArea(removeAddress,minDistLong, minDistLat, minDist*0.0006213712, listOfAreas, minimumSquare)
+            del addressesWithAreas[removeAddress]
+
+
+if __name__ == "__main__":
+   
+    #Use API 
+    API_KEY =  "AIzaSyDc1IhzrtalHNSrwKG5s_TMV-P5KvIPr84"
+    parser = argparse.ArgumentParser(description="Process images and find areas")
+
+    # Define input and output arguments
+    parser.add_argument('-a', '--address', required=True, help="Input address")
+    parser.add_argument('-r', '--radius', required=True,help="Provide radius in miles")
+    parser.add_argument('-m', '--minimum', required=True, help="Minumum square footage for each address")
+    args = parser.parse_args()
+    mainProcessingFunction(args.address, args.radius, args.minimum, API_KEY)
+
+
+
+
+
