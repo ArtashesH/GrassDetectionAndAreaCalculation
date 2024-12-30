@@ -20,6 +20,7 @@ import math
 import csv
 import cv2
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 
 
@@ -128,8 +129,12 @@ def get_satellite_image_with_resolution(lat, lon,api_key, zoom=20, size=(640, 64
         'key': api_key
     }
 
-    # Fetch satellite image
+    # Fetch satellite image and measure latency
+    start_time = time.time()
     response = requests.get(base_url, params=params)
+    end_time = time.time()
+    latency = end_time - start_time
+    print(f"API request latency: {latency:.2f} seconds")
 
     if response.status_code == 200:
         img_arr = np.asarray(bytearray(response.content), dtype=np.uint8)
@@ -291,6 +296,9 @@ def generate_circle_points(center_lat, center_lng, radius, step=10):
 #Main function for processing all units.
 def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
 
+    # Track timing for different components
+    total_model_time = 0
+    total_other_time = 0
 
     # Yolo based model for grass region detection
     model = YOLO('graddDetModelL.pt', 0.5)
@@ -317,57 +325,133 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
 
     # Generate circle points from given point with given radius 
     points = generate_circle_points(center_lat, center_lng, radius, step)
+    print(points)
     pointsUnique = [item for index, item in enumerate(points) if item not in points[:index]]
     # Print the points
     print(f"Generated {len(pointsUnique)} points within the circle:")
 
     indexOfPoint = 0
+    #Get minumum number from 10 and foind circle points, for multithread based satellite image download via google api
+    numberOfThreads =  min(len(pointsUnique), 10)
     #Go through all circle points
-    for point in pointsUnique:
-        #All lat/long points , generated inside of circle, add into the csv file.
-        #data_in_csv(indexOfPoint, point[0], point[1])
+    for pointIndex in range(0,len(pointsUnique),numberOfThreads):
+        argumentCurrent = []
+        #Multithread based satellite image download via google api
+        point0 = pointsUnique[pointIndex]
+        argumentCurrent.append((point0[0], point0[1],API_KEY, 20, (640, 640), 1))
+      
+        for v in range(1, numberOfThreads, 1):
+            if pointIndex + v < len(pointsUnique):
+                point1 = pointsUnique[pointIndex+v]
+                argumentCurrent.append((point1[0], point1[1],API_KEY, 20, (640, 640), 1))
+       
+        
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(get_satellite_image_with_resolution, a, b, c, d, e, f) for a, b, c, d, e, f in argumentCurrent]
+            #Downloading satellite images via multithread
+            currResFromThread = [future.result() for future in futures]
+            for i, (currImg, meterInPixel) in enumerate(currResFromThread):
+               
+                #All lat/long points , generated inside of circle, add into the csv file.
+                #data_in_csv(indexOfPoint, point[0], point[1])
 
-        indexOfPoint += 1
-        print("Current processing point ", indexOfPoint , "From point ", len(pointsUnique))
-        #Get satellite image from given lat/lng point and meter per pixel scale
-        currImg , meterInPixel  = get_satellite_image_with_resolution(point[0], point[1],API_KEY, zoom=20, size=(640, 640), scale=1)
+                start_time = time.time()
+
+                indexOfPoint += 1
+                print("Current processing point ", indexOfPoint , "From point ", len(pointsUnique))
+        
+                # Get satellite image timing
+                sat_start_time = time.time()
+                #currImg , meterInPixel  = get_satellite_image_with_resolution(point[0], point[1],API_KEY, zoom=20, size=(640, 640), scale=1)
+                sat_end_time = time.time()
+                total_other_time += (sat_end_time - sat_start_time)
+                print(f"Satellite image fetch time: {sat_end_time - sat_start_time:.2f} seconds")
     
-        #Run grass detection and area calculation on each image
-        resImg, areas, polygonCenterPoints = detect_grass_and_calculate_area(currImg, model,meterInPixel)
+                # Grass detection timing
+                detect_start_time = time.time()
+                resImg, areas, polygonCenterPoints = detect_grass_and_calculate_area(currImg, model,meterInPixel)
+                detect_end_time = time.time()
+                total_model_time += (detect_end_time - detect_start_time)
+                print(f"Grass detection time: {detect_end_time - detect_start_time:.2f} seconds")
 
-        tmpAddressMap = {}
-        tmpAddressMapLatLong = {}
-        #tmpAreaList = []
-        for j in range(len(polygonCenterPoints)):
-            tmpArea = areas[j]
-            tmpCenterPoint = polygonCenterPoints[j]
-            tmpDeltaX = 0
-            tmpDeltaY = 0
-            #For each detected area on image get center and with google geoapi get address
-            tmpDeltaX = (tmpCenterPoint.x - 320)* meterInPixel
-            tmpDeltaY = (320 - tmpCenterPoint.y) * meterInPixel
-            newLat, newLog =  calculate_new_coordinates(point[0], point[1], tmpDeltaX, tmpDeltaY)
-            finalAddress =  latlng_to_address(newLat, newLog, API_KEY)
+                tmpAddressMap = {}
+                tmpAddressMapLatLong = {}
+      
+        
+                # Process each detected area timing
+                areas_start_time = time.time()
+              #  from concurrent.futures import ThreadPoolExecutor
+                from functools import partial
 
-            if finalAddress != -1:
-                addressesWithLatLong[finalAddress] = [newLat, newLog]
-            if  finalAddress != -1 and  finalAddress in tmpAddressMap:
-                print('Found same address ', finalAddress,  tmpArea)
-                tmpAddressMap[finalAddress].append(tmpArea)
-            if finalAddress != -1 and not(finalAddress in tmpAddressMap):
-                tmpAddressMap[finalAddress] = [tmpArea]
+                def process_area(j, point, polygonCenterPoints, areas, meterInPixel, API_KEY):
+                    tmpArea = areas[j]
+                    tmpCenterPoint = polygonCenterPoints[j]
+            
+                    #For each detected area on image get center and with google geoapi get address
+                    tmpDeltaX = (tmpCenterPoint.x - 320)* meterInPixel
+                    tmpDeltaY = (320 - tmpCenterPoint.y) * meterInPixel
+            
+                    coord_start_time = time.time()
+                    newLat, newLog = calculate_new_coordinates(point[0], point[1], tmpDeltaX, tmpDeltaY)
+                    coord_end_time = time.time()
+                    print(f"Coordinate calculation time: {coord_end_time - coord_start_time:.2f} seconds")
+            
+                    start_time_geocode = time.time()
+                    finalAddress = latlng_to_address(newLat, newLog, API_KEY)
+                    end_time_geocode = time.time()
+                    print(f"Geocoding API request time: {end_time_geocode - start_time_geocode:.2f} seconds")
+            
+                    return (finalAddress, newLat, newLog, tmpArea)
 
-        #If current adress is not in map, add it , if exists, add bigger area for current adress
-        if len(addressesWithAreas) == 0:
-            addressesWithAreas = tmpAddressMap
-        else:
-            for tmpEl in tmpAddressMap:
-                if tmpEl in addressesWithAreas and len(tmpAddressMap[tmpEl]) > len(addressesWithAreas[tmpEl]):
-                    addressesWithAreas[tmpEl] = tmpAddressMap[tmpEl]
-                if not(tmpEl in addressesWithAreas):
-                    addressesWithAreas[tmpEl] = tmpAddressMap[tmpEl]
+                # Create partial function with fixed arguments
+                process_area_partial = partial(process_area, 
+                                             point=pointsUnique[pointIndex+i],
+                                             polygonCenterPoints=polygonCenterPoints,
+                                             areas=areas,
+                                             meterInPixel=meterInPixel,
+                                             API_KEY=API_KEY)
 
+                # Process areas in parallel using ThreadPoolExecutor
+                if len(polygonCenterPoints) > 0:
+                    with ThreadPoolExecutor(max_workers=min(len(polygonCenterPoints), 10)) as executor:
+                        results = list(executor.map(process_area_partial, range(len(polygonCenterPoints))))
+                else:
+                    results = []
 
+                # Process results
+                for finalAddress, newLat, newLog, tmpArea in results:
+                    if finalAddress != -1:
+                        addressesWithLatLong[finalAddress] = [newLat, newLog]
+                        if finalAddress in tmpAddressMap:
+                            print('Found same address ', finalAddress, tmpArea)
+                            tmpAddressMap[finalAddress].append(tmpArea)
+                        else:
+                            tmpAddressMap[finalAddress] = [tmpArea]
+
+                areas_end_time = time.time()
+                total_other_time += (areas_end_time - areas_start_time)
+                print(f"Areas processing time: {areas_end_time - areas_start_time:.2f} seconds")
+
+                # Map merging timing
+                map_start_time = time.time()
+                #If current adress is not in map, add it , if exists, add bigger area for current adress
+                if len(addressesWithAreas) == 0:
+                    addressesWithAreas = tmpAddressMap
+                else:
+                    for tmpEl in tmpAddressMap:
+                        if tmpEl in addressesWithAreas and len(tmpAddressMap[tmpEl]) > len(addressesWithAreas[tmpEl]):
+                            addressesWithAreas[tmpEl] = tmpAddressMap[tmpEl]
+                        if not(tmpEl in addressesWithAreas):
+                            addressesWithAreas[tmpEl] = tmpAddressMap[tmpEl]
+                map_end_time = time.time()
+                total_other_time += (map_end_time - map_start_time)
+                print(f"Map merging time: {map_end_time - map_start_time:.2f} seconds")
+
+                end_time = time.time()
+                execution_time = end_time - start_time
+                print(f"**** Processing time for point {indexOfPoint}: {execution_time:.2f} seconds ****")
+     #   pointIndex = pointIndex +4
+        
     #Sort all found adresses from given input adress by the distance increase
     while len(addressesWithAreas) > 0:
         minDist = sys.float_info.max
@@ -394,6 +478,11 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
             data_in_csvArea(removeAddress,minDistLong, minDistLat, minDist*0.0006213712, listOfAreas, minimumSquare)
             del addressesWithAreas[removeAddress]
 
+    print("\nTiming Analysis:")
+    print(f"Total time spent on AI model interactions: {total_model_time:.2f} seconds")
+    print(f"Total time spent on other operations: {total_other_time:.2f} seconds")
+    print(f"Difference (Other - Model): {total_other_time - total_model_time:.2f} seconds")
+
 
 if __name__ == "__main__":
    
@@ -406,11 +495,14 @@ if __name__ == "__main__":
     parser.add_argument('-r', '--radius', required=True,help="Provide radius in miles")
     parser.add_argument('-m', '--minimum', required=True, help="Minumum square footage for each address")
     args = parser.parse_args()
-    startTime = time.time()
+    
+    # Measure execution time
+    start_time = time.time()
+    
     mainProcessingFunction(args.address, args.radius, args.minimum, API_KEY)
-    endTime = time.time()
-    print("Processing time ", endTime - startTime)
-
-
+    
+    # Calculate and print execution time
+    execution_time = time.time() - start_time
+    print(f"\nTotal execution time: {execution_time:.2f} seconds")
 
 
