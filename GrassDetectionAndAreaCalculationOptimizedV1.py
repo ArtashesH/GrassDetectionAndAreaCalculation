@@ -81,27 +81,81 @@ def data_in_csv(user_id, latitude, longitude):
 
 #Write data about areas, address, distances   in result csv file. This function is used for final output csv file generation
 def data_in_csvArea(address, minDistLat, minDistLong, minDist,  listOfAreas, minumumArea):
+    if len(address) == 0:
+        display_data = {
+            'Contact Type (Lead, Customer, Other)' : '',
+            'Contact First Name': '',
+            'Contact Last Name': '',
+            'Contact Email': '',
+            'Country Code' : '',
+            'Contact Phone': '',
+            'Contact Status': 'New',
+            'Contact Business Name': '',
+            'Contact Title' : '',            
+            'Contact Address': '',
+            'Address2' : '',
+            'City': '',
+            'State': '',
+            'Zip':  '',
+            'Contact Latitude' : '',
+            'Contact Longitude' : '',
+            'Notes' :  '',
+            'Date Contact was Created' : '',
+            'User Email (RepCard user)' : ''
+          ########  'Country':   adressComp[len(adressComp) - 1],
+          #####  'Lat/Long': finalLatLong,
+          ######  'Distance from input address (in miles)': minDist,
+          #####  'Artificial grass (in sq ft)': listOfAreas,
+           #### 'WholeArea': sumOfAreas
+
+        }
+        #Write datainto output csv file 
+        csv_file_name = 'addressData.csv'
+        csv_file_path = os.path.join(os.getcwd(), csv_file_name)
+
+        with open(csv_file_path, 'a', newline='') as file:
+            writer = csv.writer(file)
+            if os.stat(csv_file_path).st_size == 0:
+                writer.writerow(display_data.keys())
+            writer.writerow(display_data.values())
+        return            
+        
     sumOfAreas = 0
     finalLatLong = str(minDistLong) + ' ' + str(minDistLat)
     #Devide address to components , zip , state, city country , etc
     adressComp = address.split(',')  
     stateAndZipCode = adressComp[len(adressComp) - 2].split(' ')
-
+   # print("INSIDE OF CSV!!!!!!!!!!!!!!!!!!!1 ")
     for i in range(len(listOfAreas)):
         sumOfAreas += listOfAreas[i]
     if sumOfAreas < float(minumumArea):
         return
     if len(adressComp) >= 5:
         display_data = {
-            'Address': adressComp[len(adressComp) - 4],
+            'Contact Type (Lead, Customer, Other)' : '',
+            'Contact First Name': '',
+            'Contact Last Name': '',
+            'Contact Email': '',
+            'Country Code' : '',
+            'Contact Phone': '',
+            'Contact Status': 'New',
+            'Contact Business Name': '',
+            'Contact Title' : '',            
+            'Contact Address': adressComp[len(adressComp) - 4],
+            'Address2' : '',
             'City': adressComp[len(adressComp) - 3],
             'State': stateAndZipCode[1],
-            'Zip code':  stateAndZipCode[2],
-            'Country':   adressComp[len(adressComp) - 1],
-            'Lat/Long': finalLatLong,
-            'Distance from input address (in miles)': minDist,
-            'Artificial grass (in sq ft)': listOfAreas,
-            'WholeArea': sumOfAreas
+            'Zip':  stateAndZipCode[2],
+            'Contact Latitude' : minDistLong,
+            'Contact Longitude' : minDistLat,
+            'Notes' :  sumOfAreas,
+            'Date Contact was Created' : '',
+            'User Email (RepCard user)' : ''
+          ########  'Country':   adressComp[len(adressComp) - 1],
+          #####  'Lat/Long': finalLatLong,
+          ######  'Distance from input address (in miles)': minDist,
+          #####  'Artificial grass (in sq ft)': listOfAreas,
+           #### 'WholeArea': sumOfAreas
 
         }
         #Write datainto output csv file 
@@ -474,10 +528,17 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
         if removeAddress != '':
 
             listOfAreas = addressesWithAreas[removeAddress]
+            #print("LIST OF AREAS ")
+            #print(listOfAreas)
             #Add all data into final output csv
             data_in_csvArea(removeAddress,minDistLong, minDistLat, minDist*0.0006213712, listOfAreas, minimumSquare)
             del addressesWithAreas[removeAddress]
-
+    
+    
+    if not(os.path.exists('addressData.csv')):
+        data_in_csvArea('','', '', '', [], '')    
+    
+    
     print("\nTiming Analysis:")
     print(f"Total time spent on AI model interactions: {total_model_time:.2f} seconds")
     print(f"Total time spent on other operations: {total_other_time:.2f} seconds")
@@ -488,6 +549,7 @@ if __name__ == "__main__":
    
     #Use API 
     API_KEY =  "AIzaSyDc1IhzrtalHNSrwKG5s_TMV-P5KvIPr84"
+  
     parser = argparse.ArgumentParser(description="Process images and find areas")
 
     # Define input and output arguments
