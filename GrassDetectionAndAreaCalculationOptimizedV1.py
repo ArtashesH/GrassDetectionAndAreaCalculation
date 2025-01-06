@@ -24,7 +24,32 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 
+def get_lat_long_google(address, api_key):
+    # Base URL for the Google Maps Geocoding API
+    url = "https://maps.googleapis.com/maps/api/geocode/json"
 
+    # Parameters for the request
+    params = {
+        "address": address,
+        "key": api_key
+    }
+
+    # Send the request
+    response = requests.get(url, params=params)
+
+    # Parse the response
+    if response.status_code == 200:
+        data = response.json()
+        if data['status'] == 'OK':
+            # Extract latitude and longitude
+            location = data['results'][0]['geometry']['location']
+            return location['lat'], location['lng']
+        else:
+            print("Geocoding error:", data['status'])
+    else:
+        print("Request error:", response.status_code)
+
+    return None, None
 
 
 
@@ -375,12 +400,19 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
     addressesWithLatLong = {}
     
     address =  inputAddress #  '10449 E Topaz Cir, Mesa, AZ 85212, USA'  # '10642 E Trillium Ave, Mesa, AZ 85212'
-    geolocator = Nominatim(user_agent="Your_Name")
-    location = geolocator.geocode(address)
-
+    ###########geolocator = Nominatim(user_agent="Your_Name")
+    ############location = geolocator.geocode(address)
+    
+    
+    center_lat, center_lng = get_lat_long_google(address, API_KEY)
+    if not(center_lat and center_lng):
+        print("Failed to retrieve geocoding information.")
+        return
     # Define circle parameters
-    center_lat = location.latitude
-    center_lng = location.longitude
+    ##########center_lat = location.latitude
+    ###############center_lng = location.longitude
+     
+
 
     radius =  (float(inputRadius) * 1609.34)
     radius = int(radius)
