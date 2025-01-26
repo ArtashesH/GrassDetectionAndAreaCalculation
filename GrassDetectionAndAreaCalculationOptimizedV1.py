@@ -24,6 +24,59 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 
+
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# Initialize Firebase
+cred = credentials.Certificate("serviceAccountKey.json")
+firebase_admin.initialize_app(cred)
+
+# Get Firestore Client
+db = firestore.client()
+
+
+
+#Update percent of processing in firebase 
+
+def update_firestore_document_percent(current_percent):
+    # Reference the document to update (e.g., "users/{document_id}")
+    doc_ref = db.collection("users").document("Mcai8aARVSHXVICky4mn")
+
+    # Fields to update
+    updated_data = {
+        "percent": current_percent#,  # Update age
+        #"status": "active"  # Add a new field or update existing one
+    }
+
+    # Update the document
+    doc_ref.update(updated_data)
+
+    print("Document updated successfully.")
+
+
+
+#Update error type in firebase 
+
+def update_firestore_document_error(current_error):
+    # Reference the document to update (e.g., "users/{document_id}")
+    doc_ref = db.collection("users").document("Mcai8aARVSHXVICky4mn")
+
+    # Fields to update
+    updated_data = {
+        "error": current_error#,  # Update age
+        #"status": "active"  # Add a new field or update existing one
+    }
+
+    # Update the document
+    doc_ref.update(updated_data)
+
+    print("Document updated successfully.")
+
+
+
+
+
 def get_lat_long_google(address, api_key):
     # Base URL for the Google Maps Geocoding API
     url = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -46,9 +99,12 @@ def get_lat_long_google(address, api_key):
             return location['lat'], location['lng']
         else:
             print("Geocoding error:", data['status'])
+            update_firestore_document_error("Geocoding error")
     else:
         print("Request error:", response.status_code)
+        update_firestore_document_error("Request error")
 
+    
     return None, None
 
 
@@ -239,6 +295,7 @@ def get_satellite_image_with_resolution(lat, lon,api_key, zoom=20, size=(640, 64
         return image, meters_per_pixel
     else:
         print("Error fetching satellite image")
+        update_firestore_document_error("Error fetching satellite image")
         return None, None
 
 #Order polygon points for area calculation
@@ -265,6 +322,8 @@ def latlng_to_address(lat, lng, api_key):
         # Return the formatted address from the response
         return response["results"][0]["formatted_address"]
     else:
+        
+        update_firestore_document_error("Geocoding API error: convertion from address to lat/lng")
         return -1
        # raise  Exception(f"Geocoding API error: {response['status']} - {response.get('error_message')}")
 
@@ -301,8 +360,10 @@ def calculate_new_coordinates(initial_lat, initial_lng, distance_x, distance_y):
 
 # Function to perform building detection and area calculation
 def detect_grass_and_calculate_area(image, model,meters_per_pixel=0.1):
+    cv2.imwrite("testImg.png", image)
     # Detect buildings using YOLO model
-    results = model(image, conf=0.1)
+    #image=cv2.medianBlur(image,3)
+    results = model(image,conf=0.5)
 
     clist = results[0].boxes.cls
 
@@ -322,10 +383,12 @@ def detect_grass_and_calculate_area(image, model,meters_per_pixel=0.1):
         # Format points for use with OpenCV and Shapely
         polygon_points = maske_building.astype(int).reshape((-1, 1, 2))
         #Filter from detected regions just artificial grass class
-        if model.names[int(clist[indexOfMask])] != 'artifical':
+        ##if model.names[int(clist[indexOfMask])] != 'artifical':
+        ###    continue
+        if model.names[int(clist[indexOfMask])] != 'artifical': # or model.names[int(clist[indexOfMask])] == 'natural_grass':
             continue
-        if model.names[int(clist[indexOfMask])] == 'artifical':
-            cv2.polylines(image, [polygon_points], isClosed=True, color=(0, 255, 0), thickness=2)
+        #else:
+        cv2.polylines(image, [polygon_points], isClosed=True, color=(0, 255, 0), thickness=2)
 
         
         # Reformat polygon for Shapely and calculate area
@@ -383,6 +446,60 @@ def generate_circle_points(center_lat, center_lng, radius, step=10):
 
 
 
+#Grass region detection based on pure Computer vision 
+
+
+#from skimage.feature import local_binary_pattern
+
+def segment_green_areas(currImg):
+    # Load the image
+    image = currImg.copy()
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+    # Convert the image to HSV color space
+    hsv_image = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
+    
+    # Define the range of green color in HSV
+    lower_green = np.array([36, 20, 25])
+    upper_green = np.array([86, 200, 255])
+    
+    
+    
+   # lower_green = np.array([35, 100, 50])  # Lower bound for green (trees)
+   # upper_green = np.array([85, 255, 255])  # Upper bound for green (trees)
+    
+    # Create a mask for green colors
+    mask = cv2.inRange(hsv_image, lower_green, upper_green)
+    
+    # Bitwise-AND mask and original image
+    segmented_image = cv2.bitwise_and(image_rgb, image_rgb, mask=mask)
+    cv2.imshow("Segmented", segmented_image)
+    cv2.imshow("InitImg", image)
+    cv2.waitKey(0)
+    # Display the results
+   # plt.figure(figsize=(12, 6))
+   # plt.subplot(1, 3, 1)
+   # plt.title('Original Image')
+   # plt.imshow(image_rgb)
+   # plt.axis('off')
+    
+   # plt.subplot(1, 3, 2)
+   # plt.title('Mask')
+   # plt.imshow(mask, cmap='gray')
+   # plt.axis('off')
+    
+   # plt.subplot(1, 3, 3)
+   # plt.title('Segmented Image')
+   # plt.imshow(segmented_image)
+   # plt.axis('off')
+    
+   # plt.tight_layout()
+   # plt.show()
+
+
+
+
+
 #Main function for processing all units.
 def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
 
@@ -407,6 +524,7 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
     center_lat, center_lng = get_lat_long_google(address, API_KEY)
     if not(center_lat and center_lng):
         print("Failed to retrieve geocoding information.")
+        update_firestore_document_error("Failed to retrieve geocoding information.")
         return
     # Define circle parameters
     ##########center_lat = location.latitude
@@ -429,7 +547,7 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
 
     indexOfPoint = 0
     #Get minumum number from 10 and foind circle points, for multithread based satellite image download via google api
-    numberOfThreads =  min(len(pointsUnique), 10)
+    numberOfThreads =  min(len(pointsUnique), 1)
     #Go through all circle points
     for pointIndex in range(0,len(pointsUnique),numberOfThreads):
         argumentCurrent = []
@@ -453,11 +571,16 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
                 #data_in_csv(indexOfPoint, point[0], point[1])
                 if currImg is None:
                     continue
+               
+              ##############  segment_green_areas(currImg) 
+                                
                 start_time = time.time()
 
                 indexOfPoint += 1
                 print("Current processing point ", indexOfPoint , "From point ", len(pointsUnique))
-        
+                current_percent =int( indexOfPoint * 100 / len(pointsUnique))
+                print("current percent  ", current_percent) 
+                update_firestore_document_percent(current_percent)
                 # Get satellite image timing
                 sat_start_time = time.time()
                 #currImg , meterInPixel  = get_satellite_image_with_resolution(point[0], point[1],API_KEY, zoom=20, size=(640, 640), scale=1)
@@ -511,7 +634,7 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
 
                 # Process areas in parallel using ThreadPoolExecutor
                 if len(polygonCenterPoints) > 0:
-                    with ThreadPoolExecutor(max_workers=min(len(polygonCenterPoints), 10)) as executor:
+                    with ThreadPoolExecutor(max_workers=min(len(polygonCenterPoints), 1)) as executor:
                         results = list(executor.map(process_area_partial, range(len(polygonCenterPoints))))
                 else:
                     results = []
