@@ -29,7 +29,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 # Initialize Firebase
-cred = credentials.Certificate("serviceAccountKey.json")
+cred = credentials.Certificate("serviceAccountKey1.json")
 firebase_admin.initialize_app(cred)
 
 # Get Firestore Client
@@ -360,10 +360,8 @@ def calculate_new_coordinates(initial_lat, initial_lng, distance_x, distance_y):
 
 # Function to perform building detection and area calculation
 def detect_grass_and_calculate_area(image, model,meters_per_pixel=0.1):
-    cv2.imwrite("testImg.png", image)
     # Detect buildings using YOLO model
-    #image=cv2.medianBlur(image,3)
-    results = model(image,conf=0.5)
+    results = model(image, conf=0.1)
 
     clist = results[0].boxes.cls
 
@@ -547,7 +545,7 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
 
     indexOfPoint = 0
     #Get minumum number from 10 and foind circle points, for multithread based satellite image download via google api
-    numberOfThreads =  min(len(pointsUnique), 1)
+    numberOfThreads =  min(len(pointsUnique), 10)
     #Go through all circle points
     for pointIndex in range(0,len(pointsUnique),numberOfThreads):
         argumentCurrent = []
@@ -634,7 +632,7 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
 
                 # Process areas in parallel using ThreadPoolExecutor
                 if len(polygonCenterPoints) > 0:
-                    with ThreadPoolExecutor(max_workers=min(len(polygonCenterPoints), 1)) as executor:
+                    with ThreadPoolExecutor(max_workers=min(len(polygonCenterPoints), 10)) as executor:
                         results = list(executor.map(process_area_partial, range(len(polygonCenterPoints))))
                 else:
                     results = []
@@ -715,8 +713,8 @@ def mainProcessingFunction(inputAddress, inputRadius, minimumSquare, API_KEY):
 if __name__ == "__main__":
    
     #Use API 
-  #  API_KEY =  "AIzaSyDc1IhzrtalHNSrwKG5s_TMV-P5KvIPr84"
-    API_KEY = "AIzaSyCERUAbDAq1561tMBdONbgpokSWhhuzBHI"
+    API_KEY =  "AIzaSyDc1IhzrtalHNSrwKG5s_TMV-P5KvIPr84"
+   # API_KEY = "AIzaSyCERUAbDAq1561tMBdONbgpokSWhhuzBHI"
   
     parser = argparse.ArgumentParser(description="Process images and find areas")
 
